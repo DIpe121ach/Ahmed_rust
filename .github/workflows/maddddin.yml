@@ -1,4 +1,4 @@
-name: vvvvv
+name: vvvvvvv1
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
               Add-LocalGroupMember "Remote Desktop Users" $env:aa2
           }
 
-      # 2. تحميل الحزمة الأساسية باستخدام نظام الروابط المتعددة
+      # 2. تحميل الحزمة الأساسية باستخدام نظام الروابط المتعددة (تم الإصلاح)
       - name: Download & Extract App Bundle
         shell: pwsh
         run: |
@@ -46,15 +46,23 @@ jobs:
           New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
           $BundleZip = Join-Path $TempDir 'app_bundle.zip'
           
-          Write-Host "Fetching links from $env:LINKS_LIST_URL..."
-          $LinksContent = Invoke-WebRequest -Uri $env:LINKS_LIST_URL -UseBasicParsing | Select-Object -ExpandProperty Content
-          $Urls = $LinksContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+          Write-Host "Fetching links from: $env:LINKS_LIST_URL"
+          # استخدام Invoke-RestMethod للحصول على النص مباشرة أو تحويل الـ Content إلى String
+          $LinksText = Invoke-RestMethod -Uri $env:LINKS_LIST_URL
           
+          # تقسيم النص إلى أسطر وتنظيفها
+          $Urls = $LinksText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^http" }
+          
+          if ($Urls.Count -eq 0) {
+              Write-Error "No valid URLs found in the links file."
+              exit 1
+          }
+
           $Success = $false
           foreach ($Url in $Urls) {
               try {
                   Write-Host "Trying to download from: $Url"
-                  Invoke-WebRequest -Uri $Url -OutFile $BundleZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
+                  Invoke-WebRequest -Uri $Url -OutFile $BundleZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 180
                   Write-Host "Successfully downloaded from this link!"
                   $Success = $true
                   break
@@ -94,7 +102,9 @@ jobs:
         run: |
           $ExtractDir = Join-Path $env:TEMP 'AppBundle'
           $TsInstaller = Get-ChildItem -Path $ExtractDir -Filter "*tailscale*.msi" -Recurse | Select-Object -First 1
-          Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait
+          if ($TsInstaller) {
+              Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait
+          }
           
           $KeyFileName = "key$($env:KEY_CHOICE).txt"
           $KeyFile = Get-ChildItem -Path $ExtractDir -Filter $KeyFileName -Recurse | Select-Object -First 1
@@ -179,14 +189,14 @@ jobs:
           $NmInstaller = Get-ChildItem -Path (Join-Path $env:TEMP 'AppBundle') -Filter "*nomachine*.exe" -Recurse | Select-Object -First 1
           if ($NmInstaller) { Start-Process -FilePath $NmInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART" -Wait }
 
-      # 8. الحفاظ على الجلسة مع عداد تنازلي
+      # 8. الحفاظ على الجلسة مع العداد التنازلي (345 دقيقة)
       - name: Keep Session Alive
         shell: pwsh
         run: |
           Write-Host "==== SETUP COMPLETED SUCCESSFULLY ===="
           Write-Host "User: runneradmin | RDP is ready."
           
-          # حساب المدة: 360 دقيقة - 15 دقيقة = 345 دقيقة
+          # إجمالي وقت السيرفر 360 دقيقة. سنعمل لـ 345 دقيقة لنترك 15 دقيقة أمان.
           $KeepAliveMinutes = 345 
           Write-Host "==== SESSION STARTED: $KeepAliveMinutes Minutes ===="
           
@@ -195,4 +205,4 @@ jobs:
               Start-Sleep -Seconds 60
           }
           
-          Write-Host "==== SESSION TIME EXPIRED (15 MIN SAFETY MARGIN) ===="
+          Write-Host "==== SESSION TIME FINISHED (15 MIN BEFORE AUTO-TERMINATION) ===="
