@@ -1,4 +1,4 @@
-name: xxxxxxxxxx
+name: xxxxxxxxxxx
 
 on:
   workflow_dispatch:
@@ -6,11 +6,12 @@ on:
 jobs:
   deployment:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 360
 
     env:
-      # --- متغيرات التحكم السهلة ---
-      TIME_JOB: "10"   # الوقت بالدقائق قبل الإغلاق التلقائي (345 دقيقة = 5 ساعات و 45 دقيقة)
+      # --- يمكنك تعديل الوقت من هنا ---
+      TIME_JOB: "345"  
+      # -------------------------------
       aa2: "XCDOOD"
       aa3: "Zxxz4444"
       LINKS_LIST_URL: "https://tinyurl.com/linkstxtahmed11"
@@ -38,41 +39,28 @@ jobs:
               Add-LocalGroupMember "Remote Desktop Users" $env:aa2
           }
 
-      # 2. تحميل الحزمة الأساسية باستخدام نظام الروابط المتعددة
+      # 2. تحميل الحزمة الأساسية (نظام الروابط المتعددة لـ links.txt)
       - name: Download & Extract App Bundle
         shell: pwsh
         run: |
-          Write-Host "==== 2. DOWNLOADING APP BUNDLE FROM MULTIPLE LINKS ===="
+          Write-Host "==== 2. DOWNLOADING APP BUNDLE ===="
           $TempDir = Join-Path $env:TEMP 'AppBundle'
           New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
           $BundleZip = Join-Path $TempDir 'app_bundle.zip'
           
-          Write-Host "Fetching links from: $env:LINKS_LIST_URL"
+          Write-Host "Fetching links from $env:LINKS_LIST_URL..."
           $LinksText = Invoke-RestMethod -Uri $env:LINKS_LIST_URL
           $Urls = $LinksText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^http" }
           
-          if ($Urls.Count -eq 0) {
-              Write-Error "No valid URLs found in the links file."
-              exit 1
-          }
-
           $Success = $false
           foreach ($Url in $Urls) {
               try {
                   Write-Host "Trying to download from: $Url"
                   Invoke-WebRequest -Uri $Url -OutFile $BundleZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 180
-                  Write-Host "Successfully downloaded from this link!"
-                  $Success = $true
-                  break
-              } catch {
-                  Write-Host "Failed to download from this link. Trying next one..."
-              }
+                  $Success = $true; break
+              } catch { Write-Host "Failed. Trying next link..." }
           }
-
-          if (-not $Success) {
-              Write-Error "All links in links.txt failed."
-              exit 1
-          }
+          if (-not $Success) { Write-Error "All links failed."; exit 1 }
           Expand-Archive -Path $BundleZip -DestinationPath $TempDir -Force
 
       # 3. تثبيت RustDesk وإعداده
@@ -92,13 +80,13 @@ jobs:
               result = subprocess.run([rust_exe, "--get-id"], capture_output=True, text=True, check=True)
               print(f"\n{'='*30}\nRUSTDESK LOGIN\nID: {result.stdout.strip()}\nPASS: {new_pass}\n{'='*30}\n")
 
-      # 4. تثبيت Tailscale
+      # 4. تثبيت Tailscale وإظهار البيانات
       - name: Tailscale Setup
         shell: pwsh
         run: |
           $ExtractDir = Join-Path $env:TEMP 'AppBundle'
           $TsInstaller = Get-ChildItem -Path $ExtractDir -Filter "*tailscale*.msi" -Recurse | Select-Object -First 1
-          if ($TsInstaller) { Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait }
+          Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait
           
           $KeyFileName = "key$($env:KEY_CHOICE).txt"
           $KeyFile = Get-ChildItem -Path $ExtractDir -Filter $KeyFileName -Recurse | Select-Object -First 1
@@ -107,57 +95,109 @@ jobs:
               $RealKey = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Encoded)).Trim()
               $TsExe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
               Start-Process -FilePath $TsExe -ArgumentList "up --authkey=$RealKey --hostname=RDP-Professional" -Wait
+             
               $ip = & $TsExe ip -4
-              Write-Host "`nTailscale IP: $ip"
+              Write-Host "`n=============================="
+              Write-Host "Tailscale IP: $ip"
+              Write-Host "User: runneradmin"
+              Write-Host "Password: $($env:aa3)"
+              Write-Host "=============================="
           }
 
-      # 5. استخراج الملفات لسطح المكتب
+      # 5. استخراج الملفات (نظام الروابط المتعددة للملفات الداخلية)
       - name: Deploy Important Files to Desktop
         shell: pwsh
         run: |
           $BundleDir = Join-Path $env:TEMP 'AppBundle'
           $DesktopPath = Join-Path $env:USERPROFILE 'Desktop'
-          $LinkFile = Get-ChildItem -Path $BundleDir -Filter "Link ZIP_URL.txt" -Recurse | Select-Object -First 1
-          if ($LinkFile) {
-              $Url = (Get-Content $LinkFile.FullName -Raw).Trim()
-              if ($Url -like "http*") {
-                  $ZipFile = Join-Path $env:TEMP 'downloaded_files.zip'
+          
+          # وظيفة للتحميل من روابط متعددة داخل ملف نصي
+          function Download-WithFallback($UrlFile, $OutFile) {
+              if (Test-Path $UrlFile) {
+                  $Urls = Get-Content $UrlFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^http" }
+                  foreach ($Url in $Urls) {
+                      try {
+                          Write-Host "Downloading from: $Url"
+                          Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+                          return $true
+                      } catch { Write-Host "Link failed, trying next..." }
+                  }
+              }
+              return $false
+          }
+
+          # 5.1 معالجة Link ZIP_URL.txt
+          $UrlFile1 = Get-ChildItem -Path $BundleDir -Filter "Link ZIP_URL.txt" -Recurse | Select-Object -First 1
+          if ($UrlFile1) {
+              $ZipFile = Join-Path $env:TEMP 'downloaded_files.zip'
+              if (Download-WithFallback $UrlFile1.FullName $ZipFile) {
                   $ExtractedDir = Join-Path $env:TEMP 'temp_extract'
-                  Invoke-WebRequest -Uri $Url -OutFile $ZipFile -UseBasicParsing
                   Expand-Archive -Path $ZipFile -DestinationPath $ExtractedDir -Force
-                  Get-ChildItem -Path $ExtractedDir -Recurse -File | ForEach-Object { Move-Item $_.FullName $DesktopPath -Force -ErrorAction SilentlyContinue }
+                  Get-ChildItem -Path $ExtractedDir -Recurse -File | ForEach-Object {
+                      Move-Item $_.FullName $DesktopPath -Force -ErrorAction SilentlyContinue
+                  }
               }
           }
 
-      # 6. تثبيت المتصفحات والكيرنل و NoMachine
-      - name: Browser & NoMachine Setup
+          # 5.2 معالجة Link THREE_ZIP_URL.txt
+          $UrlFile2 = Get-ChildItem -Path $BundleDir -Filter "*THREE_ZIP_URL*.txt" -Recurse | Select-Object -First 1
+          if ($UrlFile2) {
+              $ThreeZip = Join-Path $env:TEMP 'three.zip'
+              $ThreeDir = Join-Path $env:TEMP 'THREE_EXTRACTED'
+              New-Item -Path $ThreeDir -ItemType Directory -Force | Out-Null
+              if (Download-WithFallback $UrlFile2.FullName $ThreeZip) {
+                  Expand-Archive -Path $ThreeZip -DestinationPath $ThreeDir -Force
+              }
+          }
+
+      # 6. تثبيت المتصفحات والكيرنل (كما في الكود القديم)
+      - name: Browser & Kernel Setup
         shell: pwsh
         run: |
           $BundleDir = Join-Path $env:TEMP 'AppBundle'
           $ThreeDir = Join-Path $env:TEMP 'THREE_EXTRACTED'
-          # (تم دمج الخطوات للتنظيم)
+          
+          # NST Browser & Kernel
           $NstInstaller = Get-ChildItem -Path $BundleDir -Filter "*nst*.exe" -Recurse | Select-Object -First 1
-          if ($NstInstaller) { Start-Process -FilePath $NstInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART", "/S" -Wait }
+          if ($NstInstaller) {
+              Start-Process -FilePath $NstInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART", "/S" -Wait
+              $NstKernelZip = Get-ChildItem -Path $ThreeDir -Filter "nstchrome.zip" -Recurse | Select-Object -First 1
+              if ($NstKernelZip) {
+                  $NstDest = "C:\Users\runneradmin\.nst-agent\download\kernels\nstchrome"
+                  New-Item -ItemType Directory -Path $NstDest -Force | Out-Null
+                  Expand-Archive -Path $NstKernelZip.FullName -DestinationPath $NstDest -Force
+              }
+          }
+          
+          # BitBrowser & Kernel
           $BitInstaller = Get-ChildItem -Path $BundleDir -Filter "*BitBrowser*.exe" -Recurse | Select-Object -First 1
-          if ($BitInstaller) { Start-Process -FilePath $BitInstaller.FullName -ArgumentList "/S", "/allusers", "/norestart" -Wait }
-          $NmInstaller = Get-ChildItem -Path $BundleDir -Filter "*nomachine*.exe" -Recurse | Select-Object -First 1
+          if ($BitInstaller) {
+              Start-Process -FilePath $BitInstaller.FullName -ArgumentList "/S", "/allusers", "/norestart" -Wait
+              $BitKernelZip = Get-ChildItem -Path $ThreeDir -Filter "bitchrom.zip" -Recurse | Select-Object -First 1
+              if ($BitKernelZip) {
+                  $BitDest = "C:\Users\runneradmin\AppData\Roaming\BitBrowser\Chrome-bin"
+                  New-Item -ItemType Directory -Path $BitDest -Force | Out-Null
+                  Expand-Archive -Path $BitKernelZip.FullName -DestinationPath $BitDest -Force
+              }
+          }
+
+      # 7. تثبيت NoMachine
+      - name: Install NoMachine
+        shell: pwsh
+        run: |
+          $NmInstaller = Get-ChildItem -Path (Join-Path $env:TEMP 'AppBundle') -Filter "*nomachine*.exe" -Recurse | Select-Object -First 1
           if ($NmInstaller) { Start-Process -FilePath $NmInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART" -Wait }
 
-      # 7. الحفاظ على الجلسة مع العداد التنازلي المعتمد على المتغير
+      # 8. الحفاظ على الجلسة (العداد التنازلي المعتمد على TIME_JOB)
       - name: Keep Session Alive
         shell: pwsh
         run: |
           Write-Host "==== SETUP COMPLETED SUCCESSFULLY ===="
-          
-          # جلب القيمة من المتغير TIME_JOB الموجود في الأعلى
           $KeepAliveMinutes = [int]$env:TIME_JOB
-          
           Write-Host "Run `$KeepAliveMinutes = $KeepAliveMinutes"
           Write-Host "==== SESSION STARTED: $KeepAliveMinutes Minutes ===="
-          
           for ($i = $KeepAliveMinutes; $i -gt 0; $i--) {
               Write-Host "Alive - $i minutes remaining..."
               Start-Sleep -Seconds 60
           }
-          
-          Write-Host "==== SESSION TIME FINISHED (Safety Stop) ===="
+          Write-Host "==== SESSION ENDED BY SAFETY MARGIN ===="
