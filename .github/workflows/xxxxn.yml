@@ -6,11 +6,11 @@ on:
 jobs:
   deployment:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 25
 
     env:
       # --- يمكنك تعديل الوقت من هنا ---
-      TIME_JOB: "345"  
+      TIME_JOB: "10"  
       # -------------------------------
       aa2: "XCDOOD"
       aa3: "Zxxz4444"
