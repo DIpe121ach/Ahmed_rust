@@ -6,7 +6,7 @@ on:
 jobs:
   deployment:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 390
 
     env:
       # --- وقت الإغلاق الخاص بك (بالدقائق) ---
@@ -212,7 +212,7 @@ jobs:
           if (Test-Path $StopFile) {
               Write-Host "----------------------------------------------"
               Write-Host "File [$StopFile] FOUND."
-              Write-Host "Action: Skipping shutdown. Waiting for GitHub forced timeout (360m)."
+              Write-Host "Action: Skipping shutdown. Waiting for GitHub forced timeout "
               Write-Host "----------------------------------------------"
               while($true) { Start-Sleep -Seconds 3600 }
           } else {
