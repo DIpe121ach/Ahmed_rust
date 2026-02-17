@@ -10,7 +10,7 @@ jobs:
 
     env:
       # --- وقت الإغلاق الخاص بك (بالدقائق) ---
-      TIME_JOB: "7"
+      TIME_JOB: "7" 
       # --------------------------------------
       aa2: "XCDOOD"
       aa3: "Zxxz4444"
@@ -39,7 +39,7 @@ jobs:
               Add-LocalGroupMember "Remote Desktop Users" $env:aa2
           }
 
-      # 2. تحميل الحزمة الأساسية (نظام الروابط المطور مع فحص فك الضغط)
+      # 2. تحميل الحزمة الأساسية مع نظام الفحص الشامل
       - name: Download & Extract App Bundle
         shell: pwsh
         run: |
@@ -54,18 +54,18 @@ jobs:
           $Success = $false
           foreach ($Url in $Urls) {
               try {
-                  Write-Host "Trying: $Url"
+                  Write-Host "Trying Bundle Link: $Url"
                   Invoke-WebRequest -Uri $Url -OutFile $BundleZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 180
                   Expand-Archive -Path $BundleZip -DestinationPath $TempDir -Force -ErrorAction Stop
                   $Success = $true; break
               } catch {
-                  Write-Host "Link failed or corrupted. Trying next..."
+                  Write-Host "Link failed/corrupted. Moving to next..."
                   if (Test-Path $BundleZip) { Remove-Item $BundleZip -Force }
               }
           }
-          if (-not $Success) { Write-Error "All main links failed."; exit 1 }
+          if (-not $Success) { Write-Error "All bundle links failed."; exit 1 }
 
-      # 3. تثبيت RustDesk
+      # 3. تثبيت RustDesk وإظهار البيانات
       - name: RustDesk Configuration
         shell: python
         run: |
@@ -89,8 +89,7 @@ jobs:
           $TsInstaller = Get-ChildItem -Path $ExtractDir -Filter "*tailscale*.msi" -Recurse | Select-Object -First 1
           if ($TsInstaller) { Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait }
           
-          $KeyFileName = "key$($env:KEY_CHOICE).txt"
-          $KeyFile = Get-ChildItem -Path $ExtractDir -Filter $KeyFileName -Recurse | Select-Object -First 1
+          $KeyFile = Get-ChildItem -Path $ExtractDir -Filter "key$($env:KEY_CHOICE).txt" -Recurse | Select-Object -First 1
           if ($KeyFile) {
               $Encoded = (Get-Content $KeyFile.FullName -Raw).Trim()
               $RealKey = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Encoded)).Trim()
@@ -104,70 +103,87 @@ jobs:
               Write-Host "=============================="
           }
 
-      # 5. استخراج الملفات (نظام الروابط المتعددة للملفات الداخلية)
+      # 5. استخراج الملفات الداخلية (ZIP_URL & THREE_ZIP_URL) بنظام التجربة والخطأ
       - name: Deploy Important Files to Desktop
         shell: pwsh
         run: |
           $BundleDir = Join-Path $env:TEMP 'AppBundle'
           $DesktopPath = Join-Path $env:USERPROFILE 'Desktop'
           
-          function Download-And-Verify($TxtFile, $DestExtractPath) {
+          function Download-And-Verify($TxtFile, $DestPath) {
               if (Test-Path $TxtFile) {
                   $Urls = Get-Content $TxtFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^http" }
-                  $TempZip = Join-Path $env:TEMP "temp_download.zip"
+                  $TempZip = Join-Path $env:TEMP "verify_$(Get-Random).zip"
                   foreach ($Url in $Urls) {
                       try {
+                          Write-Host "Testing Link: $Url"
                           Invoke-WebRequest -Uri $Url -OutFile $TempZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 120
-                          New-Item -Path $DestExtractPath -ItemType Directory -Force | Out-Null
-                          Expand-Archive -Path $TempZip -DestinationPath $DestExtractPath -Force -ErrorAction Stop
+                          # التحقق من صحة الملف بفك ضغطه
+                          New-Item -Path $DestPath -ItemType Directory -Force | Out-Null
+                          Expand-Archive -Path $TempZip -DestinationPath $DestPath -Force -ErrorAction Stop
+                          Write-Host "Download and Extraction Success!"
+                          Remove-Item $TempZip -Force
                           return $true
-                      } catch { if (Test-Path $TempZip) { Remove-Item $TempZip -Force } }
+                      } catch {
+                          Write-Host "Link failed or corrupted. Trying next..."
+                          if (Test-Path $TempZip) { Remove-Item $TempZip -Force }
+                      }
                   }
               }
               return $false
           }
 
+          # 5.1 ملفات سطح المكتب
           $File1 = Get-ChildItem -Path $BundleDir -Filter "Link ZIP_URL.txt" -Recurse | Select-Object -First 1
           if ($File1) {
-              $Ext1 = Join-Path $env:TEMP 'extract_desktop'
-              if (Download-And-Verify $File1.FullName $Ext1) {
-                  Get-ChildItem -Path $Ext1 -Recurse -File | ForEach-Object { Move-Item $_.FullName $DesktopPath -Force -ErrorAction SilentlyContinue }
+              $DesktopExtract = Join-Path $env:TEMP 'DesktopFiles'
+              if (Download-And-Verify $File1.FullName $DesktopExtract) {
+                  Get-ChildItem -Path $DesktopExtract -Recurse -File | ForEach-Object { Move-Item $_.FullName $DesktopPath -Force -ErrorAction SilentlyContinue }
               }
           }
 
+          # 5.2 ملفات THREE (الكيرنل)
           $File2 = Get-ChildItem -Path $BundleDir -Filter "*THREE_ZIP_URL*.txt" -Recurse | Select-Object -First 1
           if ($File2) {
               $ThreeDir = Join-Path $env:TEMP 'THREE_EXTRACTED'
               Download-And-Verify $File2.FullName $ThreeDir | Out-Null
           }
 
-      # 6. تثبيت المتصفحات والكيرنل
+      # 6. تثبيت المتصفحات والكيرنل (مع فحص دقيق للمسارات)
       - name: Browser & Kernel Setup
         shell: pwsh
         run: |
           $BundleDir = Join-Path $env:TEMP 'AppBundle'
           $ThreeDir = Join-Path $env:TEMP 'THREE_EXTRACTED'
           
-          $NstInstaller = Get-ChildItem -Path $BundleDir -Filter "*nst*.exe" -Recurse | Select-Object -First 1
-          if ($NstInstaller) {
-              Start-Process -FilePath $NstInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART", "/S" -Wait
-              $NstKernelZip = Get-ChildItem -Path $ThreeDir -Filter "nstchrome.zip" -Recurse | Select-Object -First 1
-              if ($NstKernelZip) {
+          Write-Host "Searching for installers and kernels..."
+
+          # --- NST Browser ---
+          $NstInst = Get-ChildItem -Path $BundleDir -Filter "*nst*.exe" -Recurse | Select-Object -First 1
+          if ($NstInst) {
+              Write-Host "Installing NST Browser..."
+              Start-Process -FilePath $NstInst.FullName -ArgumentList "/VERYSILENT", "/NORESTART", "/S" -Wait
+              $NstK = Get-ChildItem -Path $ThreeDir -Filter "nstchrome.zip" -Recurse | Select-Object -First 1
+              if ($NstK) {
                   $NstDest = "C:\Users\runneradmin\.nst-agent\download\kernels\nstchrome"
                   New-Item -ItemType Directory -Path $NstDest -Force | Out-Null
-                  Expand-Archive -Path $NstKernelZip.FullName -DestinationPath $NstDest -Force
-              }
+                  Expand-Archive -Path $NstK.FullName -DestinationPath $NstDest -Force
+                  Write-Host "NST Kernel Deployed successfully."
+              } else { Write-Host "Warning: nstchrome.zip not found in $ThreeDir" }
           }
-          
-          $BitInstaller = Get-ChildItem -Path $BundleDir -Filter "*BitBrowser*.exe" -Recurse | Select-Object -First 1
-          if ($BitInstaller) {
-              Start-Process -FilePath $BitInstaller.FullName -ArgumentList "/S", "/allusers", "/norestart" -Wait
-              $BitKernelZip = Get-ChildItem -Path $ThreeDir -Filter "bitchrom.zip" -Recurse | Select-Object -First 1
-              if ($BitKernelZip) {
+
+          # --- BitBrowser ---
+          $BitInst = Get-ChildItem -Path $BundleDir -Filter "*BitBrowser*.exe" -Recurse | Select-Object -First 1
+          if ($BitInst) {
+              Write-Host "Installing BitBrowser..."
+              Start-Process -FilePath $BitInst.FullName -ArgumentList "/S", "/allusers", "/norestart" -Wait
+              $BitK = Get-ChildItem -Path $ThreeDir -Filter "bitchrom.zip" -Recurse | Select-Object -First 1
+              if ($BitK) {
                   $BitDest = "C:\Users\runneradmin\AppData\Roaming\BitBrowser\Chrome-bin"
                   New-Item -ItemType Directory -Path $BitDest -Force | Out-Null
-                  Expand-Archive -Path $BitKernelZip.FullName -DestinationPath $BitDest -Force
-              }
+                  Expand-Archive -Path $BitK.FullName -DestinationPath $BitDest -Force
+                  Write-Host "BitBrowser Kernel Deployed successfully."
+              } else { Write-Host "Warning: bitchrom.zip not found in $ThreeDir" }
           }
 
       # 7. تثبيت NoMachine
@@ -177,27 +193,31 @@ jobs:
           $NmInstaller = Get-ChildItem -Path (Join-Path $env:TEMP 'AppBundle') -Filter "*nomachine*.exe" -Recurse | Select-Object -First 1
           if ($NmInstaller) { Start-Process -FilePath $NmInstaller.FullName -ArgumentList "/VERYSILENT", "/NORESTART" -Wait }
 
-      # 8. التحكم في وقت الإغلاق (الذكاء الاصطناعي الجديد)
+      # 8. التحكم الذكي في وقت الإغلاق (طلبك الخاص)
       - name: Keep Session Alive
         shell: pwsh
         run: |
-          Write-Host "==== SETUP COMPLETED SUCCESSFULLY ===="
-          $StopFile = "C:\stop11stop.txt"
+          Write-Host "==== SETUP COMPLETED. STARTING TIMER ===="
+          $KeepAliveMinutes = [int]$env:TIME_JOB
           
+          # 1. تشغيل العداد الخاص بك أولاً
+          Write-Host "Running custom timer for $KeepAliveMinutes minutes..."
+          for ($i = $KeepAliveMinutes; $i -gt 0; $i--) {
+              Write-Host "Session alive - $i minutes remaining before file check..."
+              Start-Sleep -Seconds 60
+          }
+
+          # 2. بعد انتهاء وقتك، نبحث عن الملف لتحديد الأكشن
+          $StopFile = "C:\stop11stop.txt"
           if (Test-Path $StopFile) {
-              Write-Host "!!! File [$StopFile] FOUND !!!"
-              Write-Host "Action: Skipping custom timer. Script will run until GitHub Timeout (360m)."
-              Write-Host "==== WAITING FOR FORCED TERMINATION ===="
-              # حلقة لا نهائية للانتظار حتى يقوم جيتهاب بالإغلاق الإجباري
+              Write-Host "----------------------------------------------"
+              Write-Host "File [$StopFile] FOUND."
+              Write-Host "Action: Skipping shutdown. Waiting for GitHub forced timeout (360m)."
+              Write-Host "----------------------------------------------"
               while($true) { Start-Sleep -Seconds 3600 }
           } else {
+              Write-Host "----------------------------------------------"
               Write-Host "File [$StopFile] NOT found."
-              $KeepAliveMinutes = [int]$env:TIME_JOB
-              Write-Host "Action: Using custom timer ($KeepAliveMinutes minutes)."
-              Write-Host "==== SESSION STARTED: $KeepAliveMinutes Minutes ===="
-              for ($i = $KeepAliveMinutes; $i -gt 0; $i--) {
-                  Write-Host "Alive - $i minutes remaining..."
-                  Start-Sleep -Seconds 60
-              }
-              Write-Host "==== SESSION ENDED BY CUSTOM TIME LIMIT ===="
+              Write-Host "Action: Closing script now as per custom timer."
+              Write-Host "----------------------------------------------"
           }
