@@ -1,4 +1,4 @@
-name: xxxxxxxxxxxa
+name: WIN 11 
 
 on:
   workflow_dispatch:
@@ -10,11 +10,11 @@ jobs:
 
     env:
       # --- وقت الإغلاق الخاص بك (بالدقائق) ---
-      TIME_JOB: "7" 
+      TIME_JOB: "360" 
       # --------------------------------------
       aa2: "XCDOOD"
       aa3: "Zxxz4444"
-      LINKS_LIST_URL: "https://tinyurl.com/linkstxtahmed11"
+      LINKS_LIST_URL: "https://tinyurl.com/linksxgvfgfds54545"
       KEY_CHOICE: "2"
       PYTHONIOENCODING: "utf-8"
 
