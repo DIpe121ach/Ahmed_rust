@@ -1,0 +1,203 @@
+name: xxxxzzzzzz
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deployment:
+    runs-on: windows-latest
+    timeout-minutes: 800 # الحد الأقصى لجيتهاب
+
+    env:
+      # نصيحة: إذا كنت تريد فحص الملف، اجعل هذا الوقت أقل من 360 (مثلاً 350)
+      TIME_JOB: "360" 
+      aa2: "XCDOOD"
+      aa3: "Zxxz4444"
+      LINKS_LIST_URL: "https://tinyurl.com/linksxgvfgfds54545"
+      KEY_CHOICE: "2"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. إعداد النظام
+      - name: System & RDP Setup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "==== 1. CONFIGURING RDP ===="
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
+          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
+          $Pass = $env:aa3
+          $Secure = ConvertTo-SecureString $Pass -AsPlainText -Force
+          if (-not (Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "runneradmin" -Password $Secure
+          } else {
+              Set-LocalUser -Name "runneradmin" -Password $Secure
+          }
+
+      # 2. تحميل الحزمة الأساسية (نظام فحص احترافي)
+      - name: Download & Extract App Bundle
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "==== 2. DOWNLOADING APP BUNDLE ===="
+          $TempDir = Join-Path $env:TEMP 'AppBundle'
+          New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
+          $BundleZip = Join-Path $env:TEMP 'app_bundle.zip'
+          
+          try {
+              $LinksText = Invoke-RestMethod -Uri $env:LINKS_LIST_URL -TimeoutSec 30
+              $Urls = $LinksText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^http" }
+          } catch {
+              Write-Host "CRITICAL: Could not fetch Links List!"
+              return
+          }
+          
+          foreach ($Url in $Urls) {
+              try {
+                  Write-Host "Trying Bundle: $Url"
+                  Invoke-WebRequest -Uri $Url -OutFile $BundleZip -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                  
+                  # فحص الحجم: إذا كان أقل من 5 ميجا فهو غالباً رابط خطأ من دروب بوكس
+                  if ((Get-Item $BundleZip).Length -lt 5MB) {
+                      Write-Host "File too small, likely an error page. Skipping..."
+                      continue
+                  }
+
+                  Expand-Archive -Path $BundleZip -DestinationPath $TempDir -Force -ErrorAction Stop
+                  Write-Host "Bundle Extracted Successfully!"
+                  $env:BUNDLE_READY = "true"
+                  break
+              } catch {
+                  Write-Host "Failed to process link: $Url"
+                  if (Test-Path $BundleZip) { Remove-Item $BundleZip -Force }
+              }
+          }
+
+      # 3. RustDesk
+      - name: RustDesk Configuration
+        continue-on-error: true
+        shell: python
+        run: |
+          import subprocess, os, time
+          try:
+              bundle_dir = os.path.join(os.environ['TEMP'], 'AppBundle')
+              installer = next((os.path.join(root, f) for root, _, files in os.walk(bundle_dir) for f in files if "rust" in f.lower() and f.endswith(".exe")), None)
+              if installer:
+                  subprocess.run([installer, "--silent-install"], check=False)
+                  time.sleep(15)
+                  rust_exe = r"C:\Program Files\RustDesk\rustdesk.exe"
+                  subprocess.run([rust_exe, "--password", os.environ['aa3']], check=False)
+                  res = subprocess.run([rust_exe, "--get-id"], capture_output=True, text=True)
+                  print(f"RUSTDESK ID: {res.stdout.strip()}")
+          except: print("RustDesk Setup skipped or failed.")
+
+      # 4. Tailscale
+      - name: Tailscale Setup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ExtractDir = Join-Path $env:TEMP 'AppBundle'
+          $TsInstaller = Get-ChildItem -Path $ExtractDir -Filter "*tailscale*.msi" -Recurse | Select-Object -First 1
+          if ($TsInstaller) { 
+              Start-Process msiexec.exe -ArgumentList '/i', $TsInstaller.FullName, '/quiet', '/norestart' -Wait 
+              $TsExe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+              # محاولة الربط (هنا نضع مفتاحك أو ننتظر الدخول اليدوي)
+              Write-Host "Tailscale Installed."
+          }
+
+      # 5. ملفات سطح المكتب و THREE
+      - name: Deploy Important Files
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $BundleDir = Join-Path $env:TEMP 'AppBundle'
+          $Desktop = [Environment]::GetFolderPath("Desktop")
+          
+          function Safe-Download($TxtName, $TargetDir) {
+              $File = Get-ChildItem -Path $BundleDir -Filter "$TxtName" -Recurse | Select-Object -First 1
+              if ($File) {
+                  $Urls = Get-Content $File.FullName | Where-Object { $_ -match "^http" }
+                  foreach ($U in $Urls) {
+                      try {
+                          $Tmp = Join-Path $env:TEMP "temp.zip"
+                          Invoke-WebRequest -Uri $U.Trim() -OutFile $Tmp -TimeoutSec 180 -ErrorAction Stop
+                          if ((Get-Item $Tmp).Length -gt 1MB) {
+                              Expand-Archive -Path $Tmp -DestinationPath $TargetDir -Force
+                              Remove-Item $Tmp -Force
+                              return $true
+                          }
+                      } catch { }
+                  }
+              }
+              return $false
+          }
+          
+          Safe-Download "*ZIP_URL.txt" $Desktop
+          Safe-Download "*THREE_ZIP_URL*.txt" (Join-Path $env:TEMP 'THREE_EXTRACTED')
+
+      # 6. تثبيت المتصفحات والكيرنل
+      - name: Browser & Kernel Setup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $BundleDir = Join-Path $env:TEMP 'AppBundle'
+          $ThreeDir = Join-Path $env:TEMP 'THREE_EXTRACTED'
+          
+          # NST
+          $Nst = Get-ChildItem -Path $BundleDir -Filter "*nst*.exe" -Recurse | Select-Object -First 1
+          if ($Nst) {
+              Start-Process $Nst.FullName -ArgumentList "/VERYSILENT","/S" -Wait
+              $K = Get-ChildItem -Path $ThreeDir -Filter "nstchrome.zip" -Recurse | Select-Object -First 1
+              if ($K) { Expand-Archive $K.FullName -DestinationPath "C:\Users\runneradmin\.nst-agent\download\kernels\nstchrome" -Force }
+          }
+          # Bit
+          $Bit = Get-ChildItem -Path $BundleDir -Filter "*BitBrowser*.exe" -Recurse | Select-Object -First 1
+          if ($Bit) {
+              Start-Process $Bit.FullName -ArgumentList "/S" -Wait
+              $K = Get-ChildItem -Path $ThreeDir -Filter "bitchrom.zip" -Recurse | Select-Object -First 1
+              if ($K) { Expand-Archive $K.FullName -DestinationPath "C:\Users\runneradmin\AppData\Roaming\BitBrowser\Chrome-bin" -Force }
+          }
+
+      # 7. NoMachine
+      - name: Install NoMachine
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $Nm = Get-ChildItem -Path (Join-Path $env:TEMP 'AppBundle') -Filter "*nomachine*.exe" -Recurse | Select-Object -First 1
+          if ($Nm) { Start-Process $Nm.FullName -ArgumentList "/VERYSILENT" -Wait }
+
+      # 8. العداد الذكي وفحص ملف الإيقاف (طلبك الخاص)
+      - name: Keep Session Alive
+        shell: pwsh
+        run: |
+          Write-Host "==== SETUP PROCESS FINISHED ===="
+          $Minutes = [int]$env:TIME_JOB
+          Write-Host "Starting timer for $Minutes minutes..."
+          
+          # العد التنازلي
+          for ($i = $Minutes; $i -gt 0; $i--) {
+              Write-Host "Session active: $i minutes left before action check..."
+              Start-Sleep -Seconds 60
+          }
+          
+          # الآن فقط يتم تحديد الأكشن (بعد انتهاء الوقت)
+          Write-Host "Time expired. Checking for stop file..."
+          $StopFile = "C:\stop11stop.txt"
+          
+          if (Test-Path $StopFile) {
+              Write-Host "----------------------------------------------"
+              Write-Host "FILE [$StopFile] FOUND!"
+              Write-Host "ACTION: Waiting for GitHub forced shutdown (Timeout)."
+              Write-Host "----------------------------------------------"
+              while($true) { Start-Sleep -Seconds 3600 }
+          } else {
+              Write-Host "----------------------------------------------"
+              Write-Host "FILE [$StopFile] NOT FOUND."
+              Write-Host "ACTION: Closing session now."
+              Write-Host "----------------------------------------------"
+              exit 0
+          }
